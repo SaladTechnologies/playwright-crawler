@@ -4,38 +4,45 @@ const stealth = require("puppeteer-extra-plugin-stealth");
 chromium.use(stealth());
 
 const {
-  PAGE_DATA_URL = "http://localhost:3000",
-  PAGE_DATA_AUTH_HEADER = "Benchmark-Api-Key",
-  PAGE_DATA_API_KEY = "1234567890",
-  QUEUE_URL = "http://localhost:3001",
-  CRAWL_ID = "crawl",
+  CRAWL_SERVICE_URL = "http://localhost:3000",
+  AUTH_HEADER_NAME,
+  AUTH_HEADER_VALUE,
 } = process.env;
 
-async function getNextUrl() {
-  const url = new URL("/" + CRAWL_ID, QUEUE_URL);
+const headers = {};
+if (AUTH_HEADER_NAME && AUTH_HEADER_VALUE) {
+  headers[AUTH_HEADER_NAME] = AUTH_HEADER_VALUE;
+}
+
+/**
+ * We use this to do eager fetching of the next few urls to process.
+ */
+const _queue = [];
+
+async function fillQueue(num=1) {
+  const url = new URL("/job", CRAWL_SERVICE_URL);
+  url.searchParams.append("num", num);
   const response = await fetch(url.toString(), {
     method: "GET",
-    headers: {
-      [PAGE_DATA_AUTH_HEADER]: PAGE_DATA_API_KEY,
-    },
+    headers
   });
 
   if (!response.ok) {
     throw new Error("Failed to get next url");
   }
 
-  const queueMessage = await response.json();
+  const jobs = await response.json();
+  _queue.push(...jobs);
+}
 
-  if (queueMessage.messages?.length) {
-    const { url } = JSON.parse(queueMessage.messages[0].body);
-
-    return {
-      url,
-      messageId: queueMessage.messages[0].messageId
-    }
-  } else {
-    return null;
+async function getNextUrl() {
+  if (_queue.length) {
+    fillQueue(1);
+    return _queue.shift();
   }
+
+  await fillQueue(2);
+  return _queue.shift();
 }
 
 /**
@@ -43,65 +50,36 @@ async function getNextUrl() {
  * @param messageId The id of the message to delete from the queue
  * @returns 
  */
-async function markPageComplete(messageId) {
-  const url = new URL(`/${CRAWL_ID}/${encodeURIComponent(messageId)}`, QUEUE_URL);
+async function markPageComplete(crawlId, deleteId) {
+  const url = new URL(`/crawl/${crawlId}/job/${deleteId}`, CRAWL_SERVICE_URL);
   const response = await fetch(url.toString(), {
     method: "DELETE",
-    headers: {
-      [PAGE_DATA_AUTH_HEADER]: PAGE_DATA_API_KEY,
-    },
+    headers
   });
 
   if (!response.ok) {
     throw new Error(`Error deleting message: ${response.status} ${response.statusText}\n${await response.text()}`);
   }
-  const json = await response.json()
-
-  return json;
+  
+  return;
 }
 
-async function savePageContent(url, html, links) {
-  const submitUrl = new URL("/" + CRAWL_ID, PAGE_DATA_URL);
-  await fetch(submitUrl.toString(), {
-    method: "POST",
+async function savePageContent(pageId, content, links) {
+  const submitUrl = new URL(`/page/${pageId}`, CRAWL_SERVICE_URL);
+  const resp = await fetch(submitUrl.toString(), {
+    method: "PUT",
     headers: {
       "Content-Type": "application/json",
-      [PAGE_DATA_AUTH_HEADER]: PAGE_DATA_API_KEY,
+      ...headers
     },
     body: JSON.stringify({
-      url,
-      html,
+      content,
       links,
     }),
   });
-}
 
-const splitIntoChunks = (array, chunkSize) => {
-  const chunks = [];
-  for (let i = 0; i < array.length; i += chunkSize) {
-    chunks.push(array.slice(i, i + chunkSize));
-  }
-  return chunks;
-}
-
-async function queueLinks(links) {
-  const submitUrl = new URL("/" + CRAWL_ID, QUEUE_URL);
-
-  const chunks = splitIntoChunks(links, 10);
-
-  for (const chunk of chunks) {
-    await Promise.all(chunk.map(link => {
-      return fetch(submitUrl.toString(), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [PAGE_DATA_AUTH_HEADER]: PAGE_DATA_API_KEY,
-        },
-        body: JSON.stringify({
-          url: link,
-        }),
-      });
-    }));
+  if (!resp.ok) {
+    throw new Error(`Error submitting page content: ${resp.status} ${resp.statusText}\n${await resp.text()}`);
   }
 }
 
@@ -110,7 +88,12 @@ async function processPage(browser, url) {
   console.log(`Processing ${url}`);
   await page.goto(url);
   // Wait for the page to fully load
-  await page.waitForLoadState('networkidle', { timeout: 5000 });
+  try {
+    await page.waitForLoadState('networkidle', { timeout: 5000 });
+  } catch (e) {
+    // If we timeout, just continue
+  }
+  
 
   // Get the full html content of the page
   const html = await page.content();
@@ -123,15 +106,32 @@ async function processPage(browser, url) {
   return { html, links };
 }
 
+let keepAlive = true;
+process.on("SIGINT", () => {
+  keepAlive = false;
+});
+process.on("SIGTERM", () => {
+  keepAlive = false;
+});
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function main() {
   const browser = await chromium.launch({ headless: true });
 
-  let nextUrl;
-  while (nextUrl = await getNextUrl()) {
-    const { url, messageId } = nextUrl;
+  while (keepAlive) {
+    const job = await getNextUrl();
+    if (!job) {
+      console.log("No jobs found, sleeping for 5 seconds");
+      await sleep(5000);
+      continue;
+    }
+    const { url, page_id, crawl_id, delete_id } = job;
     const { html, links } = await processPage(browser, url);
     console.log(`Found ${links.length} links in page of size ${html.length}`);
-    Promise.all([savePageContent(url, html, links), queueLinks(links)]).then(() => markPageComplete(messageId));
+    savePageContent(page_id, html, links).then(() => markPageComplete(crawl_id, delete_id));
   }
 
   await browser.close();

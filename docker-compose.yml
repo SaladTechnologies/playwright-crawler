@@ -3,13 +3,7 @@ version: '3'
 services:
   crawler:
     image: saladtechnologies/playwright-crawler:latest
-    environment:
-      # This is used to identify the benchmark,
-      # and we can query by it in DynamoDB
-      CRAWL_ID: crawl-test
-
-      # You will need to set these values in the environment
-      # before running `docker compose up`
-      PAGE_DATA_URL: ${REPORTING_URL:-https://localhost:3000}
-      PAGE_DATA_API_KEY: ${REPORTING_API_KEY:-1234567890}
-      QUEUE_URL: ${QUEUE_URL:-https://localhost:9324}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: host

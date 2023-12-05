@@ -6,4 +6,22 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # depends_on:
+    #   - crawling-service
+    environment:
+      - CRAWL_SERVICE_URL=http://localhost:3000
     network_mode: host
+  # crawling-service:
+  #   image: saladtechnologies/crawling-service
+  #   ports:
+  #     - 3000:3000
+  #   environment:
+  #     - PORT=3000
+  #     - HOST=0.0.0.0
+  #     - AWS_DEFAULT_REGION=us-east-2
+  #     - AWS_PROFILE=crawler-service
+  #     - S3_BUCKET_NAME=salad-crawler-page-data
+  #     - CRAWL_TABLE_NAME=crawls
+  #     - PAGES_TABLE_NAME=pages
+  #   volumes:
+  #     - ~/.aws:/root/.aws

@@ -1,12 +1,16 @@
-FROM node:18-slim
+FROM pytorch/pytorch:2.1.1-cuda12.1-cudnn8-runtime
+
+# upgrade pip
+RUN pip install --upgrade pip
 
 # Create app directory
 WORKDIR /app
 
-COPY *.json .
-RUN npm clean-install
-RUN npx playwright install --with-deps chromium
+COPY requirements.txt .
+RUN pip install -r requirements.txt
 
-COPY *.js .
+RUN playwright install --with-deps chromium
 
-CMD [ "node", "index.js" ]
+COPY app/ .
+
+CMD [ "python", "app.py" ]
